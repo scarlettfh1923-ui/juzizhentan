@@ -1,0 +1,15 @@
+**/.env
+**/.venv/
+**/__pycache__/
+**/*.pyc
+backend/cache/
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.idea/
+*.iml
+keystore/
+.DS_Store
+
+# APKs uploaded via GitHub Releases only
+dist/*.apk
