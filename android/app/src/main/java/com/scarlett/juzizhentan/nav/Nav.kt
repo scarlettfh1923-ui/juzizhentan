@@ -1,6 +1,7 @@
 package com.scarlett.juzizhentan.nav
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -67,6 +68,7 @@ fun JuziNavHost(container: AppContainer) {
     NavHost(navController = nav, startDestination = Routes.Home) {
         composable(Routes.Home) {
             val vm: HomeViewModel = viewModel(factory = HomeViewModel.factory(repo))
+            LaunchedEffect(Unit) { vm.refreshAiStatus() }
             HomeScreen(
                 vm = vm,
                 onDiscover = { nav.navigate(Routes.Discover) },

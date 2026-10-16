@@ -56,10 +56,26 @@ fun HomeScreen(
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
             }
+            if (!vm.aiConfigured) {
+                item {
+                    PaperCard {
+                        Text("先配置 AI", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "打开右上角设置，填写 DeepSeek（或其它 OpenAI 兼容）API Key，即可在手机上直接使用，无需电脑后端。",
+                            color = InkMuted,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = onSettings, colors = ButtonDefaults.buttonColors(containerColor = AccentRed)) {
+                            Text("去设置")
+                        }
+                    }
+                }
+            }
             item {
                 PaperCard {
                     Text("发现好句", style = MaterialTheme.typography.titleMedium)
-                    Text("联网搜索名著与优质表达", color = InkMuted, style = MaterialTheme.typography.bodyMedium)
+                    Text("手机直连 AI + 联网发现优质表达", color = InkMuted, style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.height(8.dp))
                     Button(onClick = onDiscover, colors = ButtonDefaults.buttonColors(containerColor = AccentRed)) {
                         Text("去发现")

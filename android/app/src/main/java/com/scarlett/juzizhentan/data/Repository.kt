@@ -1,64 +1,83 @@
 package com.scarlett.juzizhentan.data
 
+import com.scarlett.juzizhentan.data.ai.AiClient
+import com.scarlett.juzizhentan.data.ai.AiConfig
+import com.scarlett.juzizhentan.data.ai.AiNotConfiguredException
+import com.scarlett.juzizhentan.data.ai.AiRequestException
 import com.scarlett.juzizhentan.data.local.*
 import com.scarlett.juzizhentan.data.model.*
-import com.scarlett.juzizhentan.data.remote.ApiService
-import com.scarlett.juzizhentan.data.remote.NetworkModule
+import com.scarlett.juzizhentan.data.search.DuckDuckGoClient
+import com.scarlett.juzizhentan.data.service.QuoteService
+import com.scarlett.juzizhentan.data.service.TrainingService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
-import retrofit2.HttpException
 
 class Repository(
     private val db: AppDatabase,
-    private var api: ApiService,
-    initialBaseUrl: String
+    private val aiClient: AiClient = AiClient(),
+    private val searchClient: DuckDuckGoClient = DuckDuckGoClient()
 ) {
     private val favorites = db.favoriteDao()
     private val history = db.trainingHistoryDao()
     private val settings = db.settingsDao()
-
-    var baseUrl: String = initialBaseUrl
-        private set
+    private val quotes = QuoteService(aiClient, searchClient)
+    private val training = TrainingService(aiClient)
 
     fun observeFavorites(): Flow<List<FavoriteEntity>> = favorites.observeAll()
     fun observeHistory(): Flow<List<TrainingHistoryEntity>> = history.observeRecent()
 
-    suspend fun getBaseUrl(): String =
-        settings.get(KEY_BASE_URL) ?: baseUrl
-
-    suspend fun setBaseUrl(url: String) {
-        val cleaned = url.trim().trimEnd('/')
-        settings.put(SettingsEntity(KEY_BASE_URL, cleaned))
-        baseUrl = cleaned
-        api = NetworkModule.createApi(cleaned)
+    suspend fun getAiConfig(): AiConfig {
+        val base = settings.get(KEY_AI_BASE_URL)?.trim()?.takeIf { it.isNotBlank() }
+            ?: AiClient.DEFAULT_BASE_URL
+        val key = settings.get(KEY_AI_API_KEY).orEmpty()
+        val model = settings.get(KEY_AI_MODEL)?.trim()?.takeIf { it.isNotBlank() }
+            ?: AiClient.DEFAULT_MODEL
+        return AiConfig(baseUrl = base.trimEnd('/'), apiKey = key, model = model)
     }
 
-    suspend fun ensureApi(): ApiService {
-        val url = getBaseUrl()
-        if (url != baseUrl) {
-            baseUrl = url
-            api = NetworkModule.createApi(url)
+    suspend fun saveAiConfig(baseUrl: String, apiKey: String, model: String) {
+        val cleanedBase = baseUrl.trim().trimEnd('/').ifBlank { AiClient.DEFAULT_BASE_URL }
+        val cleanedModel = model.trim().ifBlank { AiClient.DEFAULT_MODEL }
+        settings.put(SettingsEntity(KEY_AI_BASE_URL, cleanedBase))
+        settings.put(SettingsEntity(KEY_AI_API_KEY, apiKey.trim()))
+        settings.put(SettingsEntity(KEY_AI_MODEL, cleanedModel))
+        // 清除旧后端地址默认值，避免误连 10.0.2.2
+        val old = settings.get(KEY_BACKEND_URL)
+        if (old != null && (old.contains("10.0.2.2") || old.isBlank())) {
+            settings.put(SettingsEntity(KEY_BACKEND_URL, ""))
         }
-        return api
     }
 
-    suspend fun health(): HealthResponse = ensureApi().health()
+    suspend fun isAiConfigured(): Boolean = getAiConfig().configured
+
+    suspend fun testConnection(): String = withContext(Dispatchers.IO) {
+        wrap { aiClient.testConnection(getAiConfig()) }
+    }
 
     suspend fun searchQuotes(req: QuoteSearchRequest): QuoteSearchResponse =
-        wrap { ensureApi().searchQuotes(req) }
+        withContext(Dispatchers.IO) {
+            wrap { quotes.searchQuotes(getAiConfig(), req) }
+        }
 
     suspend fun analyze(req: AnalyzeRequest): AnalyzeResponse =
-        wrap { ensureApi().analyze(req) }
-
-    suspend fun generateTraining(req: TrainingGenerateRequest): TrainingLevel {
-        val avoid = history.recentFingerprints()
-        return wrap {
-            ensureApi().generateTraining(req.copy(avoid_summaries = avoid))
+        withContext(Dispatchers.IO) {
+            wrap { quotes.analyze(getAiConfig(), req) }
         }
-    }
+
+    suspend fun generateTraining(req: TrainingGenerateRequest): TrainingLevel =
+        withContext(Dispatchers.IO) {
+            val avoid = history.recentFingerprints()
+            wrap {
+                training.generate(getAiConfig(), req.copy(avoid_summaries = avoid))
+            }
+        }
 
     suspend fun critique(req: CritiqueRequest): CritiqueResponse =
-        wrap { ensureApi().critique(req) }
+        withContext(Dispatchers.IO) {
+            wrap { training.critique(getAiConfig(), req) }
+        }
 
     suspend fun saveFavorite(card: QuoteCard) {
         favorites.upsert(
@@ -76,7 +95,6 @@ class Repository(
     }
 
     suspend fun removeFavorite(id: String) = favorites.delete(id)
-
     suspend fun isFavorite(id: String) = favorites.exists(id)
 
     suspend fun saveTrainingHistory(
@@ -103,20 +121,26 @@ class Repository(
     private suspend fun <T> wrap(block: suspend () -> T): T {
         try {
             return block()
-        } catch (e: HttpException) {
-            val body = e.response()?.errorBody()?.string().orEmpty()
-            val detail = Regex("\"detail\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.getOrNull(1)
-            throw ApiException(detail ?: "服务器错误 HTTP ${e.code()}", e.code())
+        } catch (e: AiNotConfiguredException) {
+            throw ApiException(e.message ?: "请先在设置页填写 AI API Key", 401, e)
+        } catch (e: AiRequestException) {
+            throw ApiException(e.message ?: "AI 请求失败", e.httpCode, e)
         } catch (e: ApiException) {
             throw e
+        } catch (e: java.net.UnknownHostException) {
+            throw ApiException("网络不可用，请检查手机网络连接", null, e)
+        } catch (e: java.net.SocketTimeoutException) {
+            throw ApiException("请求超时，请稍后重试", null, e)
         } catch (e: Exception) {
-            throw ApiException(e.message ?: "网络异常，请检查后端地址与网络连接", null, e)
+            throw ApiException(e.message ?: "请求失败", null, e)
         }
     }
 
     companion object {
-        const val KEY_BASE_URL = "base_url"
-        const val DEFAULT_BASE_URL = "http://10.0.2.2:8765"
+        const val KEY_AI_BASE_URL = "ai_base_url"
+        const val KEY_AI_API_KEY = "ai_api_key"
+        const val KEY_AI_MODEL = "ai_model"
+        const val KEY_BACKEND_URL = "base_url" // legacy, unused
     }
 }
 

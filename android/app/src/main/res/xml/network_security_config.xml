@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Allow cleartext for local backend (emulator 10.0.2.2 / LAN IP) -->
-    <base-config cleartextTrafficPermitted="true" />
+    <!-- HTTPS by default. Cleartext only if needed for legacy optional backend. -->
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+    </domain-config>
 </network-security-config>
